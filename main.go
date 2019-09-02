@@ -24,20 +24,25 @@ var (
 )
 
 const (
-	zoneTemplateStr = `resource "aws_route53_zone" "{{ .ID }}" {
-  name = "{{ .Domain }}"
+	zoneTemplateStr = `resource "ns1_zone" "{{ .ID }}" {
+  zone = "{{ .Domain }}"
 }
 `
 	recordTemplateStr = `{{- range .Record.Comments }}
 # {{ . }}{{ end }}
-resource "aws_route53_record" "{{ .ResourceID }}" {
-  zone_id = {{ zoneReference .ZoneID }}
-  name    = "{{ .Record.Name }}"
+resource "ns1_record" "{{ .ResourceID }}" {
+  zone = {{ zoneReference .ZoneID }}
+  domain  = "{{ sanitizeDomain .Record.Name }}"
   type    = "{{ .Record.Type }}"
   ttl     = "{{ .Record.TTL }}"
-  records = [{{ range $idx, $elem := .Record.Data }}{{ if $idx }}, {{ end }}{{ ensureQuoted $elem }}{{ end }}]
+{{- range $idx, $elem := .Record.Data }}
+  answers {
+	answer = {{ ensureQuoted . }}
+  }
+{{- end }}
 }
 `
+	answersTemplateStr = `{{define "answer"}}TEST{{end}}`
 )
 
 type syntaxMode uint8
@@ -61,6 +66,7 @@ const (
 type configGenerator struct {
 	zoneTemplate   *template.Template
 	recordTemplate *template.Template
+	answerTemplate *template.Template
 
 	syntax syntaxMode
 }
@@ -68,9 +74,11 @@ type configGenerator struct {
 func newConfigGenerator(syntax syntaxMode) *configGenerator {
 	g := &configGenerator{syntax: syntax}
 	g.zoneTemplate = template.Must(template.New("zone").Parse(zoneTemplateStr))
+	g.answerTemplate = template.Must(template.New("answer").Parse(answersTemplateStr))
 	g.recordTemplate = template.Must(template.New("record").Funcs(template.FuncMap{
-		"ensureQuoted":  ensureQuoted,
-		"zoneReference": g.zoneReference,
+		"ensureQuoted":   ensureQuoted,
+		"zoneReference":  g.zoneReference,
+		"sanitizeDomain": sanitizeDomain,
 	}).Parse(recordTemplateStr))
 	return g
 }
@@ -296,6 +304,10 @@ func sanitizeRecordName(name string) string {
 	return fmt.Sprintf("_%s", id)
 }
 
+func sanitizeDomain(s string) string {
+	return strings.TrimSuffix(s, ".")
+}
+
 func excludedTypesFromString(s string) map[uint16]bool {
 	excludedTypes := make(map[uint16]bool)
 	for _, t := range strings.Split(s, ",") {
@@ -316,9 +328,9 @@ func ensureQuoted(s string) string {
 func (g *configGenerator) zoneReference(zone string) string {
 	switch g.syntax {
 	case Modern:
-		return fmt.Sprintf("aws_route53_zone.%s.zone_id", zone)
+		return fmt.Sprintf("ns1_zone.%s.zone", zone)
 	case Legacy:
-		return fmt.Sprintf(`"${aws_route53_zone.%s.zone_id}"`, zone)
+		return fmt.Sprintf(`"${ns1_zone.%s.zone}"`, zone)
 	default:
 		panic(fmt.Sprintf("Unknown mode %v", g.syntax))
 	}
